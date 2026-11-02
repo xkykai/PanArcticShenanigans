@@ -9,7 +9,7 @@ using Oceananigans.BoundaryConditions: ObliqueRadiation, TracerReservoir, Gravit
 using Oceananigans.Operators: Δzᶠᶜᶜ, Δzᶜᶠᶜ, intrinsic_vector
 using Oceananigans.BoundaryConditions: fill_halo_regions!
 using Oceananigans.Architectures: on_architecture
-using NumericalEarth.DataWrangling: DatasetRestoring, UVelocity, VVelocity
+using NumericalEarth.DataWrangling: DatasetRestoring
 using Oceananigans.ImmersedBoundaries: immersed_peripheral_node, immersed_inactive_node
 using Oceananigans.OrthogonalSphericalShellGrids: LambertConformalConicGrid
 using Dates, CUDA, Printf
@@ -109,36 +109,18 @@ dataset = GLORYSDaily()
 region  = BoundingBox(longitude = (-180, 180), latitude = (φ_south, 90))
 
 # T and S need full inpainting: capped inpainting leaves gaps in deep basins (Baffin Bay overturning, #2).
-Tᵉˣᵗ = FieldTimeSeries(Metadata(:temperature;  dates, dataset, region, dir_kw...), grid, time_indices_in_memory=length(dates))
-Sᵉˣᵗ = FieldTimeSeries(Metadata(:salinity;     dates, dataset, region, dir_kw...), grid, time_indices_in_memory=length(dates))
-uᵉˣᵗ = FieldTimeSeries(Metadata(:u_velocity;   dates, dataset, region, dir_kw...), grid, inpainting=100, time_indices_in_memory=length(dates))
-vᵉˣᵗ = FieldTimeSeries(Metadata(:v_velocity;   dates, dataset, region, dir_kw...), grid, inpainting=100, time_indices_in_memory=length(dates))
-ηᵉˣᵗ = FieldTimeSeries(Metadata(:free_surface; dates, dataset, region, dir_kw...), grid, inpainting=100, time_indices_in_memory=length(dates))
+# The series advance with the model clock, three days at a time: the barotropic substeps read the boundary
+# data up to 1.4Δt ahead.
+Tᵉˣᵗ = FieldTimeSeries(Metadata(:temperature;  dates, dataset, region, dir_kw...), grid, time_indices_in_memory=3)
+Sᵉˣᵗ = FieldTimeSeries(Metadata(:salinity;     dates, dataset, region, dir_kw...), grid, time_indices_in_memory=3)
+uᵉˣᵗ = FieldTimeSeries(Metadata(:u_velocity;   dates, dataset, region, dir_kw...), grid, inpainting=100, time_indices_in_memory=3)
+vᵉˣᵗ = FieldTimeSeries(Metadata(:v_velocity;   dates, dataset, region, dir_kw...), grid, inpainting=100, time_indices_in_memory=3)
+ηᵉˣᵗ = FieldTimeSeries(Metadata(:free_surface; dates, dataset, region, dir_kw...), grid, inpainting=100, time_indices_in_memory=3)
 
-# Rotate GLORYS velocities from east/north into the grid frame.
+# GLORYS velocities are east/north components; they are rotated into the grid frame where they are used.
 
 @inline grid_frame_u(i, j, k, grid, uₑ, vₑ) = intrinsic_vector(i, j, k, grid, uₑ, vₑ)[1]
 @inline grid_frame_v(i, j, k, grid, uₑ, vₑ) = intrinsic_vector(i, j, k, grid, uₑ, vₑ)[2]
-
-for n in eachindex(uᵉˣᵗ.times)
-    uₙ, vₙ = uᵉˣᵗ[n], vᵉˣᵗ[n]
-    uᵍ = compute!(Field(KernelFunctionOperation{Center, Center, Center}(grid_frame_u, grid, uₙ, vₙ)))
-    vᵍ = compute!(Field(KernelFunctionOperation{Center, Center, Center}(grid_frame_v, grid, uₙ, vₙ)))
-    interior(uₙ) .= interior(uᵍ)
-    interior(vₙ) .= interior(vᵍ)
-    fill_halo_regions!((uₙ, vₙ))
-end
-
-# Interpolate the rotated velocities to the faces where the model's u and v live.
-
-uᶠ = FieldTimeSeries{Face, Center, Center}(grid, uᵉˣᵗ.times; time_indexing = uᵉˣᵗ.time_indexing)
-vᶠ = FieldTimeSeries{Center, Face, Center}(grid, vᵉˣᵗ.times; time_indexing = vᵉˣᵗ.time_indexing)
-
-for n in eachindex(uᵉˣᵗ.times)
-    set!(uᶠ[n], compute!(Field(@at((Face, Center, Center), uᵉˣᵗ[n]))))
-    set!(vᶠ[n], compute!(Field(@at((Center, Face, Center), vᵉˣᵗ[n]))))
-end
-@info "Rotated GLORYS velocities into the grid frame and interpolated them to faces"
 
 if make_movies
     iter = Observable(1)
@@ -168,17 +150,27 @@ velocity_scheme()  = ObliqueRadiation(inflow_timescale = bc["velocity_inflow_day
 atlantic_tracer_scheme() = TracerReservoir(inflow_length_scale = bc["tracer_inflow_km_atlantic"] * kilometers)
 pacific_tracer_scheme()  = TracerReservoir(inflow_length_scale = bc["tracer_inflow_km_pacific"]  * kilometers)
 
-@inline atlantic_obc(i, k, grid, clock, fields, φ) = @inbounds φ[i, 1,          k, Oceananigans.Units.Time(clock.time)]
-@inline  pacific_obc(i, k, grid, clock, fields, φ) = @inbounds φ[i, grid.Ny,    k, Oceananigans.Units.Time(clock.time)]
-@inline pacific_face_obc(i, k, grid, clock, fields, φ) = @inbounds φ[i, grid.Ny+1, k, Oceananigans.Units.Time(clock.time)]
+@inline atlantic_obc(i, k, grid, clock, fields, φ) = @inbounds φ[i, 1,       k, Oceananigans.Units.Time(clock.time)]
+@inline  pacific_obc(i, k, grid, clock, fields, φ) = @inbounds φ[i, grid.Ny, k, Oceananigans.Units.Time(clock.time)]
+
+# Velocities in the grid frame at the boundary cell; u is averaged onto the face where it lives.
+@inline grid_frame(i, j, k, grid, p, t) = intrinsic_vector(i, j, k, grid, (@inbounds p.u[i, j, k, t]), (@inbounds p.v[i, j, k, t]))
+@inline tangential_u(i, j, k, grid, p, t) = (grid_frame(max(i - 1, 1), j, k, grid, p, t)[1] + grid_frame(i, j, k, grid, p, t)[1]) / 2
+
+@inline atlantic_u_obc(i, k, grid, clock, fields, p) = tangential_u(i, 1,       k, grid, p, Oceananigans.Units.Time(clock.time))
+@inline  pacific_u_obc(i, k, grid, clock, fields, p) = tangential_u(i, grid.Ny, k, grid, p, Oceananigans.Units.Time(clock.time))
+@inline atlantic_v_obc(i, k, grid, clock, fields, p) = grid_frame(i, 1,       k, grid, p, Oceananigans.Units.Time(clock.time))[2]
+@inline  pacific_v_obc(i, k, grid, clock, fields, p) = grid_frame(i, grid.Ny, k, grid, p, Oceananigans.Units.Time(clock.time))[2]
+
+glorys = (u = uᵉˣᵗ, v = vᵉˣᵗ, η = ηᵉˣᵗ)
 
 u_obcs = FieldBoundaryConditions(
-    south = ValueBoundaryCondition(atlantic_obc, discrete_form = true, parameters = uᶠ, scheme = velocity_scheme()),
-    north = ValueBoundaryCondition(pacific_obc,  discrete_form = true, parameters = uᶠ, scheme = velocity_scheme()))
+    south = ValueBoundaryCondition(atlantic_u_obc, discrete_form = true, parameters = glorys, scheme = velocity_scheme()),
+    north = ValueBoundaryCondition(pacific_u_obc,  discrete_form = true, parameters = glorys, scheme = velocity_scheme()))
 
 v_obcs = FieldBoundaryConditions(
-    south = NormalFlowBoundaryCondition(atlantic_obc,    discrete_form = true, parameters = vᶠ, scheme = velocity_scheme()),
-    north = NormalFlowBoundaryCondition(pacific_face_obc, discrete_form = true, parameters = vᶠ, scheme = velocity_scheme()))
+    south = NormalFlowBoundaryCondition(atlantic_v_obc, discrete_form = true, parameters = glorys, scheme = velocity_scheme()),
+    north = NormalFlowBoundaryCondition(pacific_v_obc,  discrete_form = true, parameters = glorys, scheme = velocity_scheme()))
 
 T_obcs = FieldBoundaryConditions(
     south = ValueBoundaryCondition(atlantic_obc, discrete_form = true, parameters = Tᵉˣᵗ, scheme = atlantic_tracer_scheme()),
@@ -191,35 +183,33 @@ S_obcs = FieldBoundaryConditions(
 @inline wetcell(i, j, k, grid, ℓx, ℓy, ℓz) =
     !immersed_peripheral_node(i, j, k, grid, ℓx, ℓy, ℓz) & !immersed_inactive_node(i, j, k, grid, ℓx, ℓy, ℓz)
 
-@inline function vertical_integral(i, j, grid, u, t, Δz, ℓx, ℓy, ℓz)
-    U = zero(eltype(grid))
+# Transport through the boundary face j, from the grid-frame v of the boundary cell jᶜ.
+@inline function transport(i, j, jᶜ, grid, p, t)
+    V = zero(eltype(grid))
     @inbounds for k in 1:grid.Nz
-        wet = wetcell(i, j, k, grid, ℓx, ℓy, ℓz)
-        U += ifelse(wet, u[i, j, k, t] * Δz(i, j, k, grid), zero(U))
+        wet = wetcell(i, j, k, grid, Center(), Face(), Center())
+        V += ifelse(wet, grid_frame(i, jᶜ, k, grid, p, t)[2] * Δzᶜᶠᶜ(i, j, k, grid), zero(V))
     end
-    return U
+    return V
 end
 
 @inline function atlantic_V_obc(i, k, grid, clock, fields, p)
     t = Oceananigans.Units.Time(clock.time)
-    V = vertical_integral(i, 1, grid, p.v, t, Δzᶜᶠᶜ, Center(), Face(), Center())
-    return (V, @inbounds p.η[i, 1, 1, t])
+    return (transport(i, 1, 1, grid, p, t), @inbounds p.η[i, 1, 1, t])
 end
 
 @inline function pacific_V_obc(i, k, grid, clock, fields, p)
-    j = grid.Ny+1
     t = Oceananigans.Units.Time(clock.time)
-    V = vertical_integral(i, j, grid, p.v, t, Δzᶜᶠᶜ, Center(), Face(), Center())
-    return (V, @inbounds p.η[i, grid.Ny, 1, t])
+    return (transport(i, grid.Ny+1, grid.Ny, grid, p, t), @inbounds p.η[i, grid.Ny, 1, t])
 end
 
 V_obcs = FieldBoundaryConditions(grid, (Center(), Face(), nothing);
-    south = GravityWaveRadiationBoundaryCondition(atlantic_V_obc, discrete_form = true, parameters = (v = vᶠ, η = ηᵉˣᵗ)),
-    north = GravityWaveRadiationBoundaryCondition(pacific_V_obc,  discrete_form = true, parameters = (v = vᶠ, η = ηᵉˣᵗ)))
+    south = GravityWaveRadiationBoundaryCondition(atlantic_V_obc, discrete_form = true, parameters = glorys),
+    north = GravityWaveRadiationBoundaryCondition(pacific_V_obc,  discrete_form = true, parameters = glorys))
 
 # ## Sponge (optional, off by default)
 #
-# Gaussian rim on the open edges. Tracers relax over 1 day, velocities over 20 minutes.
+# Gaussian rim on the open edges. Tracers relax over 1 day.
 
 if bc["sponge"]
     sponge_width = 4   # cells
@@ -231,9 +221,7 @@ if bc["sponge"]
 
     FT = DatasetRestoring(Metadata(:temperature; dates, dataset, region, dir_kw...), grid; rate = 1/1days, mask = sponge_mask)
     FS = DatasetRestoring(Metadata(:salinity;    dates, dataset, region, dir_kw...), grid; rate = 1/1days, mask = sponge_mask)
-    Fu = DatasetRestoring(uᵉˣᵗ, nothing, on_architecture(arch, sponge_mask), UVelocity(), 1/20minutes)
-    Fv = DatasetRestoring(vᵉˣᵗ, nothing, on_architecture(arch, sponge_mask), VVelocity(), 1/20minutes)
-    forcing = (T = FT, S = FS, u = Fu, v = Fv)
+    forcing = (T = FT, S = FS)
 else
     forcing = NamedTuple()
 end
@@ -258,7 +246,11 @@ sea_ice = sea_ice_simulation(grid, ocean; clock = Clock(time = start_time), adve
 
 # ## Initial conditions: GLORYS (ocean and sea ice)
 
-set!(ocean.model, T = Tᵉˣᵗ[1], S = Sᵉˣᵗ[1], u = uᶠ[1], v = vᶠ[1], η = ηᵉˣᵗ[1])
+u₁ = compute!(Field(KernelFunctionOperation{Center, Center, Center}(grid_frame_u, grid, uᵉˣᵗ[1], vᵉˣᵗ[1])))
+v₁ = compute!(Field(KernelFunctionOperation{Center, Center, Center}(grid_frame_v, grid, uᵉˣᵗ[1], vᵉˣᵗ[1])))
+fill_halo_regions!((u₁, v₁))
+set!(ocean.model, T = Tᵉˣᵗ[1], S = Sᵉˣᵗ[1], u = compute!(Field(@at((Face, Center, Center), u₁))),
+                  v = compute!(Field(@at((Center, Face, Center), v₁))), η = ηᵉˣᵗ[1])
 set!(sea_ice.model, h = Metadatum(:sea_ice_thickness;     date = dates[1], dataset, region, dir_kw...),
                     ℵ = Metadatum(:sea_ice_concentration; date = dates[1], dataset, region, dir_kw...))
 
