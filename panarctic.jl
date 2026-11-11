@@ -149,8 +149,19 @@ ocean = ocean_simulation(grid;
 # the thickness h = volume / area stays bounded where the concentration is small; it needs forward-Euler steps
 # (the NumericalEarth default) and an ice Courant number below one. WENO advected h and ℵ separately and inflated
 # h to hundreds of metres in nearly ice-free cells (#29).
+#
+# Ice leaves through the open edges at the normal velocity of the first interior face and does not enter.
+@inline atlantic_ice_outflow(i, k, grid, clock, fields) = @inbounds min(fields.v[i, 2, 1], 0)
+@inline  pacific_ice_outflow(i, k, grid, clock, fields) = @inbounds max(fields.v[i, grid.Ny, 1], 0)
+
+ice_v_bcs = FieldBoundaryConditions(grid, (Center(), Face(), nothing);
+    south = NormalFlowBoundaryCondition(atlantic_ice_outflow, discrete_form = true),
+    north = NormalFlowBoundaryCondition(pacific_ice_outflow,  discrete_form = true),
+    immersed = ValueBoundaryCondition(0))
+
 sea_ice = sea_ice_simulation(grid, ocean; clock = Clock(time = start_time),
-                             advection = IncrementalRemapping(), timestepper = :ForwardEuler)
+                             advection = IncrementalRemapping(), timestepper = :ForwardEuler,
+                             boundary_conditions = (; v = ice_v_bcs))
 
 # ## Initial conditions: GLORYS (ocean and sea ice)
 
