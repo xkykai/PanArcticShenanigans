@@ -2,7 +2,7 @@
 
 julia_version = "1.13.3"
 manifest_format = "2.1"
-project_hash = "e5f7e59f6992c8342b3f68f14a90917219303cab"
+project_hash = "88a52a6dd826bbd2e3afc2ddbea4f7caa82d38d2"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -385,10 +385,11 @@ version = "1.0.0"
 
 [[deps.ClimaSeaIce]]
 deps = ["Adapt", "JLD2", "KernelAbstractions", "Oceananigans", "RootSolvers", "SeawaterPolynomials"]
-git-tree-sha1 = "7967b31c7abb93b6c2a483a96efc4bd45a1eb0e5"
-registries = "General"
+git-tree-sha1 = "31a99d2ad5039f260a10dafa51b82f6046e4cd4b"
+repo-rev = "e91d72258c0eda5f4f27cc6355eaff7310e1adbc"
+repo-url = "https://github.com/CliMA/ClimaSeaIce.jl"
 uuid = "6ba0ff68-24e6-4315-936c-2e99227c95a4"
-version = "0.7.2"
+version = "0.7.1"
 
 [[deps.CloseOpenIntervals]]
 deps = ["Static", "StaticArrayInterface"]
@@ -1886,10 +1887,10 @@ version = "0.5.5"
 
 [[deps.Oceananigans]]
 deps = ["Adapt", "BFloat16s", "Crayons", "CubedSphere", "Dates", "Distances", "DocStringExtensions", "FFTW", "GPUArraysCore", "Glob", "InteractiveUtils", "JLD2", "KernelAbstractions", "Krylov", "LinearAlgebra", "Logging", "MPI", "MuladdMacro", "OffsetArrays", "OrderedCollections", "Printf", "ReactantCore", "Rotations", "SeawaterPolynomials", "SparseArrays", "StaticArrays", "Statistics", "StructArrays"]
-git-tree-sha1 = "10751f2a96272e0caa66b342c2990b9885f4a21b"
+git-tree-sha1 = "39191502f01f3fc58abd09e7f1f97315a3be740e"
 registries = "General"
 uuid = "9e8cae18-63c1-5223-a75c-80ca9d6e9a09"
-version = "0.117.2"
+version = "0.116.1"
 
     [deps.Oceananigans.extensions]
     OceananigansAMDGPUExt = ["AMDGPU", "AbstractFFTs"]
@@ -2001,10 +2002,10 @@ uuid = "91d4177d-7536-5919-b921-800302f37372"
 version = "1.6.1+0"
 
 [[deps.OrderedCollections]]
-git-tree-sha1 = "b079a6affebde167dad8ffe0d670b53917fbcb68"
+git-tree-sha1 = "94ba93778373a53bfd5a0caaf7d809c445292ff4"
 registries = "General"
 uuid = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
-version = "2.0.3"
+version = "1.8.2"
 
 [[deps.PCRE2_jll]]
 deps = ["Artifacts", "Libdl"]
